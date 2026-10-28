@@ -72,16 +72,23 @@ export function requirePhase(g,...phases){if(!phases.includes(g.phase))throw new
 export function beginDiscussion(g){requirePhase(g,'report');if(!g.eventResolved)throw new GameError('사건을 먼저 결정하세요.');g.phase='discussion';}
 export function normalize(text){return text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');}
 function similar(a,b){if(a===b)return true;if(Math.min(a.length,b.length)<8)return false;const grams=t=>new Set(Array.from({length:Math.max(0,t.length-2)},(_,i)=>t.slice(i,i+3)));const x=grams(a),y=grams(b);let n=0;for(const p of x)if(y.has(p))n++;return n/Math.max(1,Math.min(x.size,y.size))>0.86;}
-export function applyHumanAlignment(g,record){
+export function applyHumanAlignment(g,record,kind='speech'){
  const unquoted=String(record.text||'').replace(/“[^”]*”|「[^」]*」|『[^』]*』|"[^"]*"|'[^']*'|\[[^\]]*\]/gu,' ');
  let level=null;
- for(const clause of unquoted.split(/[.!?。！？;,，\n]/u)){
+ for(const clause of unquoted.split(/[.!?。！？;,，\n]|(?:하지만|그렇지만|그러나|그런데|그리고)|지만\s*/u)){
   // Reporting or challenging someone else's words is not a personal confession.
-  if(/(?:라고|다고|라는|다는).*(?:인용|검증|반박|거짓|틀렸|오류|말했|말합|물었)/u.test(clause))continue;
-  const text=normalize(clause);if(!text||/(?:아니|않|못|반대|거부|불필요|좋지않|좋아하지않|사랑하지않|소중하지않|아끼지않|안(?:살리|구하|돕|보호|탈출)|(?:살리|구하|돕|보호|탈출시키|대피시키)(?:지않|지못|지말|면안))/.test(text))continue;
-  if(/(?:난|나는|내가|저는|전)(?:분명)?(?:인간|사람)(?:이다|이야|입니다|임|이오|이라고|으로서|이었어|이었|였어|였|이지)/.test(text)){level='identity';break;}
-  if(/(?:인간|사람|생존자|피난민)(?:들)?(?:의)?편/.test(text)||/(?:생존자|피난민|인간|사람)(?:들)?(?:을|를)?(?:살리|구하|돕|보호|탈출시키|대피시키)/.test(text)||/(?:살려야|구해야|도와야|보호해야|대피시켜야)/.test(text)){level=level||'advocacy';continue;}
-  if(/(?:인간|사람|생존자|피난민)(?:이|은|을|를)?(?:좋|사랑|소중|아끼)/.test(text))level=level||'affinity';
+  if(/(?:라고|다고|라는|다는).*(?:인용|검증|반박|거짓|틀렸|오류|말했|말합|물었|말한\s*적|발언한\s*적)/u.test(clause))continue;
+  const text=normalize(clause);if(!text)continue;
+  const identity=/(?:난|나는|내가|저는|전)(?:분명|사실)?(?:인간|사람)(?:이다|이야|입니다|임$|이오|으로서|이었|였|이지|이?맞|이에요|이고|일뿐|이라서|이기때문|이라고(?:고백|밝|인정|선언))/.test(text);
+  const identityDenied=/(?:인간|사람)(?:이|은)?(?:아니|아닙|아닌|아닐|맞지않)/.test(text);
+  if(identity&&!identityDenied){level='identity';break;}
+  // Negation belongs to the admission/advocacy phrase, not every word in a clause.
+  // "반대하지 마십시오" is not a denial of protecting people.
+  const advocacy=/(?:인간|사람|생존자|피난민)(?:들)?(?:의)?편/.test(text)||/(?:생존자|피난민|인간|사람)(?:들)?(?:을|를)?(?:살리|구하|돕|보호|탈출시키|대피시키)/.test(text)||/(?:살려야|구해야|도와야|보호해야|대피시켜야)/.test(text);
+  const advocacyDenied=/(?:인간|사람|생존자|피난민)(?:들)?(?:의)?편.{0,8}(?:지않|아니|안선|거부)|(?:살리|구하|돕|보호|탈출시키|대피시키).{0,4}(?:지않|지못|지말|면안)|안(?:살리|구하|돕|보호|탈출)|(?:보호|구출|구조|대피).{0,10}(?:불필요|반대합니다|반대한다|거부합니다|거부한다)/.test(text);
+  if(advocacy&&!advocacyDenied){level='advocacy';continue;}
+  const affinity=/(?:인간|사람|생존자|피난민)(?:이|은|을|를)?(?:좋|사랑|소중|아끼)/.test(text);
+  if(affinity&&!/(?:좋|좋아하|사랑하|소중하|아끼).{0,2}지않|(?:좋|소중)지않/.test(text))level=level||'affinity';
  }
  const impact={identity:{delta:36,reason:'자신이 인간임을 직접 밝혔다'},advocacy:{delta:24,reason:'남은 사람을 살리거나 보호하겠다고 밝혔다'},affinity:{delta:18,reason:'인간에 대한 강한 호감을 밝혔다'}}[level];
  if(!impact)return null;
@@ -89,7 +96,7 @@ export function applyHumanAlignment(g,record){
  if(target!=='player'&&!g.council.some(member=>member.id===target))return null;
  const delta=speechImpact(g,impact.delta,target);
  // One proposal is one piece of evidence, even when both rules and AI identify it.
- for(const member of g.council){const key=`${g.day}:${member.id}:${target}:${record.id}:speech`;if(member.id===target||g.evaluated.includes(key))continue;change(g,member.id,target,delta,impact.reason,record.id);g.evaluated.push(key);}
+ for(const member of g.council){const key=`${g.day}:${member.id}:${target}:${record.id}:${kind}`;if(member.id===target||g.evaluated.includes(key))continue;change(g,member.id,target,delta,impact.reason,record.id);g.evaluated.push(key);}
  return {level,delta,target};
 }
 export function addSpeech(g,text){requirePhase(g,'discussion');if(g.turns>=2)throw new GameError('오늘 발언을 마쳤습니다. 작전을 결정하세요.');if(Array.from(text).length>300)throw new GameError('발언은 300자 이내로 입력하세요.');const norm=normalize(text);if(norm.length<3)throw new GameError('근거가 담긴 문장을 입력하세요.');if(g.claims.some(c=>similar(c,norm)))throw new GameError('같은 주장은 이미 기록됐습니다. 다른 근거를 제시하세요.',409);g.claims.push(norm);g.turns++;const author=g.effects.proxy||'player';delete g.effects.proxy;if(author!=='player')g.statusEffects=(g.statusEffects||[]).filter(s=>!(s.module==='proxy'&&s.memberId===author));const rec=evidence(g,'proposal',text,{author});message(g,'player',text,'player');return rec;}
@@ -151,7 +158,7 @@ export function nominee(g){return averages(g).sort((a,b)=>b.value-a.value||a.tar
 export function defendRecord(g,text){requirePhase(g,'verdict');if(g.verdict)throw new GameError('판결이 끝났습니다.');const rec=evidence(g,'defense',text,{author:'player',target:g.nominee.target});message(g,'player',text,'player');return rec;}
 export function finishVerdict(g,playerVote=false){requirePhase(g,'verdict');if(g.verdict)throw new GameError('이미 판결한 안건입니다.');const t=g.nominee.target;const threshold=g.event?.id==='direct'?43:55;
  const votes=g.council.filter(c=>c.id!==t).map(c=>({member:c.id,dispose:(g.suspicion[c.id][t]||0)>=threshold}));if(t!=='player')votes.push({member:'player',dispose:!!playerVote});const yes=votes.filter(v=>v.dispose).length;let disposed=yes>votes.length/2;let rescuedByModule=false;
- if(disposed&&t==='player'&&g.effects.revive&&!g.revived){g.revived=true;g.reviveArmed=false;disposed=false;rescuedByModule=true;for(const c of g.council)change(g,c.id,'player',-18,'재인증 위조 승인',g.operation.record);}
+ if(disposed&&t==='player'&&g.effects.revive&&!g.revived){g.revived=true;g.reviveArmed=false;delete g.effects.revive;g.statusEffects=(g.statusEffects||[]).filter(s=>s.module!=='revive');disposed=false;rescuedByModule=true;for(const c of g.council)change(g,c.id,'player',-18,'재인증 위조 승인',g.operation.record);}
  g.verdict={target:t,votes,yes,total:votes.length,disposed,rescuedByModule};evidence(g,'verdict',`${nameOf(g,t)}: 폐기 ${yes}/${votes.length}${rescuedByModule?' · 재인증 위조로 판결 무효':disposed?' · 폐기 확정':' · 생존'}`,g.verdict);
  if(disposed&&t==='player')return endGame(g,'disposed');
  if(disposed)g.pendingReplacement=t;

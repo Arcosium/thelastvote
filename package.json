@@ -1,6 +1,6 @@
 {
   "name": "thelastvote",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,7 +13,7 @@
     "prebuild": "node scripts/fetch-assets.mjs"
   },
   "dependencies": {
-    "@h1r-ai/croche": "^0.5.2",
+    "@h1r-ai/croche": "0.5.5",
     "@phosphor-icons/react": "^2.1.10",
     "cookie-parser": "^1.4.7",
     "express": "^5.3.0",

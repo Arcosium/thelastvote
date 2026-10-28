@@ -5,7 +5,7 @@ import {once} from 'node:events';
 import {mkdtempSync,mkdirSync,rmSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {join} from 'node:path';
-import {randomBytes} from 'node:crypto';
+import {randomBytes,randomUUID} from 'node:crypto';
 import {Store} from '../server/store.mjs';
 import {newGame} from '../server/engine.mjs';
 
@@ -45,7 +45,7 @@ test('시연 종료: 링크·API·기존 쿠키·비밀번호 로그인을 차�
   assert.equal((await request('/api/me',undefined,secondCookie+'; '+previousCookie)).data.user.username,'second_player');
   const signedOut=await request('/api/logout',{},secondCookie);assert.equal(signedOut.status,200);
   assert.equal((await request('/api/me',undefined,secondCookie.replace('thelastvote_session=','previous_session='))).data.user,null);
-  const act=(body)=>request('/api/game/action',body,normalCookie);
+  const act=(body)=>request('/api/game/action',{runId:original.id,requestId:randomUUID(),...body},normalCookie);
   const first={action:'module',module:'noise',version:original.version};
   const parallel=await Promise.all([act(first),act(first)]);assert.deepEqual(parallel.map(r=>r.status).sort(),[200,409]);
   const after=(await request('/api/game',undefined,normalCookie)).data.game;assert.equal(after.version,1);assert.equal(after.usedModules.filter(id=>id==='noise').length,1);

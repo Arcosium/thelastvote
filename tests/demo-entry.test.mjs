@@ -6,7 +6,7 @@ import {mkdtempSync,mkdirSync,rmSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
-import {randomBytes} from 'node:crypto';
+import {randomBytes,randomUUID} from 'node:crypto';
 import {Store} from '../server/store.mjs';
 
 async function unusedPort(){const server=createServer();server.listen(0,'127.0.0.1');await once(server,'listening');const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port;}
@@ -39,7 +39,7 @@ test('공개 시연 링크: 자동 로그인, 브라우저별 격리, 재방문 
   const resumed=await request('/api/demo/login',{body:{},cookie:a.cookie});assert.equal(resumed.status,200);assert.equal(resumed.headers.get('set-cookie'),null);assert.equal((await request('/api/game',{cookie:a.cookie})).body.game.id,g.id);
   const inspector=new Store(dir);assert.notEqual(inspector.resolve(a.cookie.split('=')[1]).owner,inspector.resolve(b.cookie.split('=')[1]).owner);assert.equal(inspector.db.prepare("SELECT COUNT(*) AS n FROM users WHERE username='demo'").get().n,1);inspector.db.close();
 
-  const act=async(action,extra={})=>{const response=await request('/api/game/action',{body:{action,version:g.version,...extra},cookie:a.cookie});assert.equal(response.status,200,JSON.stringify(response.body));g=response.body.game;return response;};
+  const act=async(action,extra={})=>{const response=await request('/api/game/action',{body:{action,runId:g.id,requestId:randomUUID(),version:g.version,...extra},cookie:a.cookie});assert.equal(response.status,200,JSON.stringify(response.body));g=response.body.game;return response;};
   for(let day=1;day<=3;day++){
    await act('begin');const zone='rush';
    if(day===1){const drafts=await act('draft',{intent:'작전 효율 검증'});assert.ok(drafts.body.drafts.drafts.every(text=>text.length>0));}

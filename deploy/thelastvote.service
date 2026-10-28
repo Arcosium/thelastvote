@@ -8,6 +8,7 @@ Type=simple
 WorkingDirectory=/home/arcosium/projects/thelastvote
 EnvironmentFile=/home/arcosium/vault/thelastvote/.env
 Environment=NODE_ENV=production
+Environment=TRUST_CLOUDFLARE=1
 ExecStart=/home/arcosium/.nvm/versions/node/v24.18.0/bin/node server/index.mjs
 Restart=on-failure
 RestartSec=5

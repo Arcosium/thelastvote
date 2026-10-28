@@ -10,7 +10,7 @@ services:
       PORT: 8682
       DATA_DIR: /app/data
     ports:
-      - "${APP_PORT:-8682}:8682"
+      - "127.0.0.1:${APP_PORT:-8682}:8682"
     volumes:
       - game-data:/app/data
     restart: unless-stopped
