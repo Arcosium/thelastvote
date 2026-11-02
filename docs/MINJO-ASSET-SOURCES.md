@@ -1,5 +1,9 @@
 # Minjo asset source records
 
+## 권리
+
+The Last Vote의 저작권과 수익에 관한 권리는 저장소 소유자(Arka)에게 있다. 협업자 minjo는 minjo 브랜치로 제공한 전신 캐릭터, 전장 배경, 배경 음악(`minjo-field-prelude-*.wav`), 화면 디자인을 포함해 이 게임에 대한 자신의 저작권과 수익 권리를 모두 저장소 소유자에게 양도했다(2026-11-02 소유자 확인). minjo 브랜치의 마지막 커밋 `d2853f7`은 병합 커밋 `0f2a681`로 main에 들어와 있다.
+
 ## src/assets/tarot/SOURCES.md
 
 The following Rider–Waite–Smith tarot scans are from Wikimedia Commons. Their file pages mark the scans as public domain.
