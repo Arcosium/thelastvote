@@ -9,3 +9,11 @@ _workspace/
 public/assets/
 
 .playwright-cli/
+
+# Android local build products and review artifacts
+mobile/.gradle/
+mobile/.kotlin/
+mobile/**/build/
+mobile/local.properties
+mobile/*.apk
+_workspace/

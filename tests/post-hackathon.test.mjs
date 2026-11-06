@@ -20,6 +20,10 @@ test('시연 종료: 링크·API·기존 쿠키·비밀번호 로그인을 차�
  try{
   for(let i=0;i<100&&!ready.includes('listening');i++)await new Promise(r=>setTimeout(r,50));assert.match(ready,/listening/);
   assert.equal((await request('/api/catalog')).data.demoEnabled,false);
+  const privacy=await request('/privacy');assert.equal(privacy.status,200);assert.match(privacy.headers.get('cache-control'),/no-transform/);
+  for(const text of ['원스토어 상품 페이지에 표시된 개발자 연락처','05:30','요일별 7개','고정된 자동 삭제 기한이 없습니다'])assert.ok(privacy.data.includes(text),text);
+  assert.ok(!privacy.data.includes('[등록 예정]'));assert.ok(!privacy.data.includes('현재 확인 중'));
+
   for(const path of ['/demo','/demo/entry.js','/api/demo','/api/demo/login'])assert.equal((await request(path,path.startsWith('/api/')?{}:undefined)).status,410,path);
   assert.equal((await request('/api/me',undefined,demoCookie)).data.user,null);
   assert.equal((await request('/api/game',undefined,'thelastvote_session='+demoToken)).status,401);

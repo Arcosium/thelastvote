@@ -2,6 +2,7 @@ import express from 'express';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import {resolve,join} from 'node:path';
+import {rmSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {z} from 'zod';
 import {randomUUID} from 'node:crypto';
@@ -76,6 +77,25 @@ app.post('/api/demo',asyncRoute(async(req,res)=>{
 }));
 app.post('/api/logout',auth,(req,res)=>{const name=demoEnabled&&store.resolve(req.cookies.thelastvote_demo_session)?.role==='demo'?'thelastvote_demo_session':'thelastvote_session';store.logout(req.cookies[name]);res.clearCookie(name,{path:'/'});res.json({ok:true});});
 app.get('/api/game',auth,(req,res)=>{const g=store.game(req.user.owner);if(g){const durationChanged=engine.migrateGameDuration(g);const siteChanged=engine.migrateTutorialMission(g);const missionChanged=['discussion','operation'].includes(g.phase)&&!g.missionZone&&engine.ensureMissionZone(g);if(durationChanged||siteChanged||missionChanged)store.save(req.user.owner,g);if(g.phase==='ended')store.complete(req.user,g);}res.json({game:g?engine.publicGame(g):null,user:safeUser(req.user),ai:ai.statusFor(g)});});
+const tutorialSteps=['briefing','discussion','response','operation','verdict','reward','modules','event'];
+app.post('/api/tutorial',auth,(req,res)=>{
+ const body=z.discriminatedUnion('action',[z.object({runId:z.string().uuid(),action:z.literal('seen'),step:z.enum(tutorialSteps)}).strict(),z.object({runId:z.string().uuid(),action:z.literal('skip')}).strict()]).parse(req.body);
+ if(!store.throttle('tutorial:'+req.user.id,90,60000))throw new engine.GameError('잠시 후 다시 시도하세요.',429);
+ if(!store.updateTutorial(req.user,body))throw new engine.GameError('현재 판의 안내를 확인해 주세요.',409);
+ res.json({user:safeUser(req.user)});
+});
+app.post('/api/account/delete',auth,asyncRoute(async(req,res)=>{
+ const {password}=z.object({password:z.string().min(8).max(128)}).strict().parse(req.body),owner=req.user.owner;
+ if(req.user.role==='demo')throw new engine.GameError('시연 계정은 삭제할 수 없습니다.',403);
+ if(locks.has(owner))throw new engine.GameError('진행 중인 요청이 끝난 뒤 삭제하세요.',409);
+ if(!store.throttle('delete:'+req.user.id,5,600000))throw new engine.GameError('10분 뒤 다시 시도하세요.',429);
+ locks.add(owner);try{
+  if(!await store.login(req.user.username,password))throw new engine.GameError('비밀번호를 확인하세요.',403);
+  rmSync(join(dataDir,'croche',owner),{recursive:true,force:true});store.deleteUser(req.user);
+  res.clearCookie('thelastvote_session',{path:'/'});res.json({ok:true});
+ }finally{locks.delete(owner);}
+}));
+app.get('/privacy',(req,res)=>{res.setHeader('Cache-Control','no-cache, no-transform');res.type('html').send(`<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>개인정보 처리방침 · The Last Vote</title><link rel="stylesheet" href="/privacy.css"><main><h1>개인정보 처리방침</h1><p>시행일: 2026-11-06</p><h2>저장하는 정보와 목적</h2><p>아이디, 비밀번호 검증값(scrypt), 로그인 세션, 게임 발언·진행 기록, 점수, AI 사용량과 단계별 진행 이벤트를 계정 인증과 게임 제공·오류 분석에 사용합니다. 이메일과 실명은 받지 않으며 비밀번호 원문을 저장하지 않습니다.</p><h2>AI 처리</h2><p>위원 응답과 EVE 초안을 만들 때 필요한 게임 발언과 공식 기록을 Croche AI 서비스에 전달합니다. 계정 비밀번호와 서버 키는 전달하지 않습니다. 외부 AI 서비스의 처리·보관 정책은 해당 제공자의 정책을 따르며, 외부에 이미 전달된 기록의 삭제는 별도 확인이 필요합니다.</p><h2>보관과 삭제</h2><p>계정과 게임 기록은 회원 탈퇴 전까지 보관합니다. 로그인 세션은 7일 뒤 만료되며, 만료된 세션과 요청 제한 기록은 주기적으로 정리합니다. 중복 요청 응답은 8일 뒤 정리합니다. 단계 로그에는 이메일·발언 원문을 넣지 않습니다.</p><p>게임의 데이터 안내에서 비밀번호를 다시 입력해 계정을 삭제할 수 있습니다. 계정, 모든 세션·판·점수·서버 내 AI 저장 기록과 상세 사용량을 함께 삭제하며 복구할 수 없습니다. 운영 서버의 별도 보관본과 운영 로그에는 고정된 자동 삭제 기한이 없습니다. 서버 전체 백업은 매일 05:30(한국시간) 암호화해 Google Drive에 보관하며 요일별 7개 파일을 다음 같은 요일의 백업으로 교체합니다. 정상 실행 시 삭제 전 자료가 약 7일 남을 수 있고 실패하면 교체가 늦어질 수 있습니다. 별도 보관본의 삭제가 필요하면 아래 문의처로 요청해 주세요.</p><p>탈퇴 후에는 계정·판과 연결되지 않는 날짜별 AI 총비용과 미확정 예약액의 합계만 서비스 전체 예산 상한을 지키기 위해 남깁니다.</p><h2>문의</h2><p>원스토어 상품 페이지에 표시된 개발자 연락처로 문의해 주세요.</p><a href="/">게임으로 돌아가기</a></main></html>`);});
 app.get('/api/leaderboard',auth,(req,res)=>res.json({rows:store.leaderboard(),period:'최근 7일 · 일일 도전 구출 인원 합계'}));
 app.get('/api/records/export',auth,(req,res)=>{const g=store.game(req.user.owner);if(!g)return res.status(404).json({error:'진행 기록이 없습니다.'});res.setHeader('Content-Disposition','attachment; filename="the-last-vote-run.json"');res.json({game:engine.publicGame(g),exportedAt:new Date().toISOString()});});
 app.post('/api/game/start',auth,asyncRoute(async(req,res)=>{
@@ -86,7 +106,7 @@ app.post('/api/game/start',auth,asyncRoute(async(req,res)=>{
  const profile=store.profile(store.userById(req.user.id));const demo=req.user.role==='demo';if(!demo&&MASKS.find(m=>m.id===b.mask).unlock>profile.runs)throw new engine.GameError('아직 해금하지 않은 가면입니다.',403);
  if(b.daily&&store.dailyPlayed(req.user.id))throw new engine.GameError('오늘의 도전 기록은 이미 제출됐습니다. 내일 다시 도전하세요.',409);
  if(b.daily&&(b.mask!=='scribe'||demo))throw new engine.GameError('일일 도전은 일반 계정의 서기 가면으로 참여합니다.');
- const challengeDay=b.daily?kstDay():null;const g=engine.newGame({demo,challengeDay,mask:demo?'scribe':b.mask,scenario:demo?0:b.scenario,tier:b.daily?1:profile.tier,daily:b.daily,seed:demo?'demo-0':b.daily?`daily-${challengeDay}`:randomUUID(),memory:profile.memory});store.save(req.user.owner,g);res.json({game:engine.publicGame(g),ai:ai.statusFor(g)});
+ const challengeDay=b.daily?kstDay():null;const g=engine.newGame({demo,challengeDay,mask:demo?'scribe':b.mask,scenario:demo?0:b.scenario,tier:b.daily?1:profile.tier,daily:b.daily,seed:demo?'demo-0':b.daily?`daily-${challengeDay}`:randomUUID(),memory:profile.memory});store.save(req.user.owner,g);store.startTutorial(req.user,g);store.recordEvent(req.user.owner,g,'run_start');res.json({game:engine.publicGame(g),ai:ai.statusFor(g),user:safeUser(req.user)});
 }));
 const actionSchema=z.object({runId:z.string().uuid(),requestId:z.string().uuid(),action:z.enum(['begin','opening','event','talk','prepare','search','verdict','reward','module','reroll','draft','archive','abandon']),version:z.number().int().nonnegative(),text:z.string().trim().min(3).max(600).optional(),target:z.string().max(30).optional(),module:z.string().max(30).optional(),plan:z.string().max(30).optional(),vote:z.boolean().optional(),intent:z.string().max(100).optional()}).strict();
 app.post('/api/game/action',auth,asyncRoute(async(req,res)=>{
@@ -108,7 +128,7 @@ app.post('/api/game/action',auth,asyncRoute(async(req,res)=>{
   // Mark before any provider work, so a crash never silently replays that request.
   store.beginAction(owner,b.requestId,g.id,fingerprint);started=true;
   switch(b.action){
-   case 'begin':engine.beginDiscussion(g);break;
+   case 'begin':engine.beginDiscussion(g);if(g.day===1)await ai.opening(owner,g);break;
    case 'opening':engine.requirePhase(g,'discussion');await ai.opening(owner,g);break;
    case 'event':engine.resolveEvent(g,b.target);break;
    case 'talk':{if(!b.text)throw new engine.GameError('발언을 입력하세요.');const rec=engine.addSpeech(g,b.text);await ai.discuss(owner,g,rec);break;}
@@ -124,9 +144,11 @@ app.post('/api/game/action',auth,asyncRoute(async(req,res)=>{
   }
   g.version++;store.complete(req.user,g);
   const response={game:engine.publicGame(g),drafts,ai:ai.statusFor(g),user:safeUser(req.user)};
-  store.commitAction(owner,b.requestId,g,response);res.json(response);
+  store.commitAction(owner,b.requestId,g,response);
+  const event={talk:'first_speech',search:'operation',verdict:'verdict'}[b.action];if(event)store.recordEvent(owner,g,event);if(g.phase==='ended')store.recordEvent(owner,g,'run_end');
+  res.json(response);
   };
-  if(['opening','talk','search','verdict','draft'].includes(b.action))await aiQueue.run(()=>ai.withAction(b.requestId,execute));else await execute();
+  if(['opening','talk','search','verdict','draft'].includes(b.action)&&!(b.action==='opening'&&g.day===1))await aiQueue.run(()=>ai.withAction(b.requestId,execute));else await execute();
  }catch(error){
   // Invalid rule actions have made no durable game mutation and can be corrected.
   if(started&&error instanceof engine.GameError)store.failAction(owner,b.requestId);
@@ -139,6 +161,6 @@ app.get('/demo',(req,res)=>{res.setHeader('Cache-Control','no-store, no-transfor
 app.get('/demo/entry.js',(req,res)=>{res.setHeader('Cache-Control','no-store');res.type('application/javascript').send("(async()=>{try{const response=await fetch('/api/demo/login',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:'{}'});const data=await response.json();if(!response.ok)throw new Error(data.error||'시연에 접속하지 못했습니다.');location.replace('/');}catch(error){document.getElementById('status').textContent=error.message+' 새로고침해 다시 시도해주세요.';}})();");});
 app.use(express.static(staticDir,{index:false,maxAge:'1h',setHeaders:(res,path)=>{if(path.includes('/assets/'))res.setHeader('Cache-Control','public, max-age=31536000, immutable');}}));
 app.get('/{*path}',(req,res)=>{if(req.path.startsWith('/api/'))return res.status(404).json({error:'경로를 찾을 수 없습니다.'});res.setHeader('Cache-Control','no-cache, no-transform');res.sendFile(join(staticDir,'index.html'));});
-app.use((err,req,res,next)=>{if(err instanceof z.ZodError)return res.status(400).json({error:'입력 형식을 확인하세요. 최신 화면에서 다시 시도하세요.'});if(err instanceof engine.GameError){if(err.status===503||err.status===429)res.setHeader('Retry-After','5');return res.status(err.status).json({error:err.message});}if(err.type==='entity.too.large')return res.status(413).json({error:'입력 크기가 제한을 넘었습니다.'});if(err.type==='entity.parse.failed')return res.status(400).json({error:'JSON 요청 형식을 확인하세요.'});if(err.type==='encoding.unsupported')return res.status(415).json({error:'압축된 요청은 지원하지 않습니다.'});console.error('request_error',{type:err?.name,code:err?.code||'unknown'});res.status(500).json({error:'요청을 마치지 못했습니다. 잠시 후 다시 시도하세요.'});});
+app.use((err,req,res,next)=>{if(err instanceof z.ZodError)return res.status(400).json({error:'입력 형식을 확인하세요. 최신 화면에서 다시 시도하세요.'});if(err instanceof engine.GameError){if(err.status===503||err.status===429)res.setHeader('Retry-After','5');return res.status(err.status).json({error:err.message});}if(err.type==='entity.too.large')return res.status(413).json({error:'입력 크기가 제한을 넘었습니다.'});if(err.type==='entity.parse.failed')return res.status(400).json({error:'JSON 요청 형식을 확인하세요.'});if(err.type==='encoding.unsupported')return res.status(415).json({error:'압축된 요청은 지원하지 않습니다.'});console.error(JSON.stringify({event:'request_error',method:req.method,path:req.route?.path||'unknown',stack:err?.stack?.split('\n').slice(1).join(' | ')||String(err?.name)}));res.status(500).json({error:'요청을 마치지 못했습니다. 잠시 후 다시 시도하세요.'});});
 const server=app.listen(Number(process.env.PORT||8682),process.env.HOST||'127.0.0.1',()=>console.log('The Last Vote listening'));
 process.on('SIGTERM',()=>server.close(()=>process.exit(0)));

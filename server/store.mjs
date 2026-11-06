@@ -3,6 +3,7 @@ import {randomBytes,randomUUID,scrypt,timingSafeEqual,createHash} from 'node:cry
 import {promisify} from 'node:util';
 import {mkdirSync,chmodSync} from 'node:fs';
 import {join} from 'node:path';
+import {fallbackStats} from './engine.mjs';
 const derive=promisify(scrypt);
 export const hashToken=t=>createHash('sha256').update(t).digest('hex');
 export async function passwordHash(password){const salt=randomBytes(16).toString('hex');return salt+':'+(await derive(password,salt,64)).toString('hex');}
@@ -14,6 +15,8 @@ export class Store{
  CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY,owner TEXT NOT NULL,state TEXT NOT NULL,updated INTEGER NOT NULL);
  CREATE INDEX IF NOT EXISTS run_owner ON runs(owner,updated DESC);
  CREATE TABLE IF NOT EXISTS usage(id TEXT PRIMARY KEY,owner TEXT NOT NULL,run TEXT NOT NULL,day TEXT NOT NULL,cost REAL NOT NULL,status TEXT NOT NULL,tokens INTEGER NOT NULL);
+ CREATE TABLE IF NOT EXISTS deleted_usage(day TEXT PRIMARY KEY,cost REAL NOT NULL,held REAL NOT NULL);
+ CREATE TABLE IF NOT EXISTS app_migrations(name TEXT PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS ai_inputs(id TEXT PRIMARY KEY,owner TEXT,run TEXT NOT NULL,request_id TEXT,agent TEXT NOT NULL,instance TEXT NOT NULL,day INTEGER NOT NULL,phase TEXT NOT NULL,status TEXT NOT NULL,created INTEGER NOT NULL);
  CREATE INDEX IF NOT EXISTS ai_inputs_request ON ai_inputs(request_id);
  CREATE TABLE IF NOT EXISTS usage_details(operation_id TEXT PRIMARY KEY REFERENCES usage(id),purpose TEXT,caused_by TEXT NOT NULL,model TEXT,requested_model TEXT,model_source TEXT,instance TEXT);
@@ -22,9 +25,13 @@ export class Store{
  CREATE INDEX IF NOT EXISTS usage_day ON usage(day);
  CREATE INDEX IF NOT EXISTS usage_run ON usage(run);
  CREATE TABLE IF NOT EXISTS ai_reservations(id TEXT PRIMARY KEY,owner TEXT NOT NULL,run TEXT NOT NULL,day TEXT NOT NULL,amount REAL NOT NULL,reported REAL NOT NULL DEFAULT 0,status TEXT NOT NULL,created INTEGER NOT NULL);
+ CREATE TABLE IF NOT EXISTS game_events(run TEXT NOT NULL,owner TEXT NOT NULL,event TEXT NOT NULL,day INTEGER NOT NULL,phase TEXT NOT NULL,created INTEGER NOT NULL,PRIMARY KEY(run,event,day));
  CREATE TABLE IF NOT EXISTS actions(owner TEXT NOT NULL,id TEXT NOT NULL,run TEXT NOT NULL,fingerprint TEXT NOT NULL,status TEXT NOT NULL,response TEXT,created INTEGER NOT NULL,PRIMARY KEY(owner,id));`);
  if(!this.db.prepare('PRAGMA table_info(scores)').all().some(c=>c.name==='eligible'))this.db.exec('ALTER TABLE scores ADD COLUMN eligible INTEGER NOT NULL DEFAULT 1');
- this.db.exec("UPDATE scores SET eligible=0 WHERE eligible=1 AND run IN (SELECT id FROM runs WHERE COALESCE(json_extract(state,'$.usage.fallbacks'),0)>0)");
+ this.db.exec('BEGIN IMMEDIATE');try{
+  if(!this.db.prepare("SELECT 1 FROM app_migrations WHERE name='fallback-ratio-v1'").get()){this.refreshEligibility();this.db.prepare('INSERT INTO app_migrations VALUES(?)').run('fallback-ratio-v1');}
+  this.db.exec('COMMIT');
+ }catch(error){this.db.exec('ROLLBACK');throw error;}
  }
  async createUser(username,password,role='player'){const id=randomUUID();this.db.prepare('INSERT INTO users(id,username,password,role,created) VALUES(?,?,?,?,?)').run(id,username,await passwordHash(password),role,Date.now());return this.userById(id);}
  async demoUser(){const find=()=>this.db.prepare("SELECT id,username,role,profile FROM users WHERE username='demo'").get();let user=find();if(!user){try{user=await this.createUser('demo',randomBytes(32).toString('base64url'),'demo');}catch(error){user=find();if(!user)throw error;}}if(user.role!=='demo')throw new Error('demo_account_role_mismatch');return user;}
@@ -37,7 +44,7 @@ export class Store{
  save(owner,g){this.db.prepare('INSERT INTO runs VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,updated=excluded.updated').run(g.id,owner,JSON.stringify(g),Date.now());}
  profile(user){return {runs:0,best:0,tier:1,memory:'',tutorial:null,...JSON.parse(user.profile||'{}')};}
  startTutorial(user,g){
-  if(user.role==='demo'||g.demo||g.days!==7)return;
+  if(user.role==='demo'||g.demo||g.days!==3)return;
   const p=this.profile(this.userById(user.id));
   if(p.runs!==0||p.tutorial)return;
   p.tutorial={status:'active',runId:g.id,seen:[]};
@@ -55,7 +62,29 @@ export class Store{
    this.db.exec('COMMIT');return true;
   }catch(e){this.db.exec('ROLLBACK');throw e;}
  }
- complete(user,g){if(g.phase!=='ended'||g.completed)return;this.db.exec('BEGIN IMMEDIATE');try{const exists=this.db.prepare('SELECT run FROM scores WHERE run=?').get(g.id);if(!exists&&user.role!=='demo'){const p=this.profile(this.userById(user.id));if(p.tutorial?.status==='active'&&p.tutorial.runId===g.id)p.tutorial.status='completed';p.runs++;p.best=Math.max(p.best,g.rescued);if(g.ending.success&&!g.daily)p.tier=Math.min(3,Math.max(p.tier,g.tier+1));p.memory=g.ending.why==='disposed'?`지난번엔 ${g.day}일차에 가면이 벗겨졌지. 이번엔 제안을 혼자 떠안지 마.`:`지난번엔 ${g.rescued}명을 보냈어. 다음에도 그 이름들을 기억할게.`;this.db.prepare('UPDATE users SET profile=? WHERE id=?').run(JSON.stringify(p),user.id);this.db.prepare('INSERT INTO scores(run,user_id,rescued,day,daily,eligible) VALUES(?,?,?,?,?,?)').run(g.id,user.id,g.rescued,g.daily?(g.challengeDay||(/^daily-(\d{4}-\d{2}-\d{2})$/.exec(g.seed||'')?.[1])||kstDay(Date.parse(g.createdAt))):kstDay(),g.daily?1:0,g.usage.fallbacks?0:1);}g.completed=true;this.save(user.owner,g);this.db.exec('COMMIT');}catch(e){this.db.exec('ROLLBACK');throw e;}}
+ complete(user,g){if(g.phase!=='ended'||g.completed)return;this.db.exec('BEGIN IMMEDIATE');try{const exists=this.db.prepare('SELECT run FROM scores WHERE run=?').get(g.id);if(!exists&&user.role!=='demo'){const p=this.profile(this.userById(user.id));if(p.tutorial?.status==='active'&&p.tutorial.runId===g.id)p.tutorial.status='completed';p.runs++;p.best=Math.max(p.best,g.rescued);if(g.ending.success&&!g.daily)p.tier=Math.min(3,Math.max(p.tier,g.tier+1));p.memory=g.ending.why==='disposed'?`지난번엔 ${g.day}일차에 가면이 벗겨졌지. 이번엔 제안을 혼자 떠안지 마.`:`지난번엔 ${g.rescued}명을 보냈어. 다음에도 그 이름들을 기억할게.`;this.db.prepare('UPDATE users SET profile=? WHERE id=?').run(JSON.stringify(p),user.id);this.db.prepare('INSERT INTO scores(run,user_id,rescued,day,daily,eligible) VALUES(?,?,?,?,?,?)').run(g.id,user.id,g.rescued,g.daily?(g.challengeDay||(/^daily-(\d{4}-\d{2}-\d{2})$/.exec(g.seed||'')?.[1])||kstDay(Date.parse(g.createdAt))):kstDay(),g.daily?1:0,fallbackStats(g).eligible?1:0);}g.completed=true;this.save(user.owner,g);this.db.exec('COMMIT');}catch(e){this.db.exec('ROLLBACK');throw e;}}
+ recordEvent(owner,g,event){
+  const added=this.db.prepare('INSERT OR IGNORE INTO game_events VALUES(?,?,?,?,?,?)').run(g.id,owner,event,g.day,g.phase,Date.now()).changes;
+  if(added)console.log(JSON.stringify({event,run:g.id,day:g.day,phase:g.phase}));
+ }
+ deleteUser(user){
+  this.db.exec('BEGIN IMMEDIATE');try{
+   const id=user.id;
+   // Retain only daily totals so deleting an account cannot reopen the shared budget.
+   this.db.prepare(`INSERT INTO deleted_usage(day,cost,held)
+    SELECT day,SUM(cost),SUM(held) FROM (
+     SELECT day,cost,0 AS held FROM usage WHERE owner=?
+     UNION ALL SELECT day,0,MAX(0,amount-reported) FROM ai_reservations WHERE owner=?
+    ) GROUP BY day ON CONFLICT(day) DO UPDATE SET cost=deleted_usage.cost+excluded.cost,held=deleted_usage.held+excluded.held`).run(id,id);
+   this.db.prepare('DELETE FROM usage_details WHERE operation_id IN (SELECT id FROM usage WHERE owner=?)').run(id);
+   for(const table of ['usage','ai_inputs','ai_reservations','actions','game_events','runs'])this.db.prepare(`DELETE FROM ${table} WHERE owner=?`).run(id);
+   this.db.prepare('DELETE FROM scores WHERE user_id=?').run(id);
+   this.db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
+   for(const prefix of ['start:','actions:','tutorial:','delete:'])this.db.prepare('DELETE FROM limits WHERE key=?').run(prefix+id);
+   this.db.prepare('DELETE FROM users WHERE id=?').run(id);
+   this.db.exec('COMMIT');
+  }catch(error){this.db.exec('ROLLBACK');throw error;}
+ }
  beginAIInput(e){this.db.prepare('INSERT INTO ai_inputs VALUES(?,?,?,?,?,?,?,?,?,?)').run(e.id,e.owner??null,e.run,e.requestId??null,e.agent,e.instance,e.day,e.phase,'pending',Date.now());}
  finishAIInput(id,status){this.db.prepare('UPDATE ai_inputs SET status=? WHERE id=?').run(status,id);}
  recordUsage(owner,run,e){
@@ -66,7 +95,7 @@ export class Store{
    this.db.exec('COMMIT');return added;
   }catch(error){this.db.exec('ROLLBACK');throw error;}
  }
- dayCost(){return this.db.prepare('SELECT COALESCE(SUM(cost),0) AS cost FROM usage WHERE day=?').get(kstDay()).cost;}
+ dayCost(){return this.db.prepare('SELECT COALESCE(SUM(cost),0) AS cost FROM usage WHERE day=?').get(kstDay()).cost+(this.db.prepare('SELECT cost FROM deleted_usage WHERE day=?').get(kstDay())?.cost||0);}
  reserveAI(owner,run,amount,{dayLimit=5,runLimit=.5,userLimit=1}={}){
   this.db.exec('BEGIN IMMEDIATE');
   try{
@@ -74,7 +103,8 @@ export class Store{
     const where=field+'=?'+(daily?' AND day=?':'');const args=daily?[value,day]:[value];
     const spent=this.db.prepare(`SELECT COALESCE(SUM(cost),0) n FROM usage WHERE ${where}`).get(...args).n;
     const held=this.db.prepare(`SELECT COALESCE(SUM(MAX(0,amount-reported)),0) n FROM ai_reservations WHERE ${where}`).get(...args).n;
-    return spent+held;
+    const deleted=field==='day'?this.db.prepare('SELECT cost+held AS n FROM deleted_usage WHERE day=?').get(value)?.n||0:0;
+    return spent+held+deleted;
    };
    if(!Number.isFinite(amount)||amount<=0||[[sum('day',day),dayLimit],[sum('run',run),runLimit],[sum('owner',owner,true),userLimit]].some(([cost,limit])=>!Number.isFinite(limit)||limit<0||cost+amount>limit+1e-9)){this.db.exec('COMMIT');return null;}
    const id=randomUUID();this.db.prepare('INSERT INTO ai_reservations(id,owner,run,day,amount,status,created) VALUES(?,?,?,?,?,?,?)').run(id,owner,run,day,amount,'active',Date.now());this.db.exec('COMMIT');return id;
@@ -90,6 +120,7 @@ export class Store{
  prune(){const now=Date.now();this.db.prepare('DELETE FROM sessions WHERE expires<=?').run(now);this.db.prepare('DELETE FROM limits WHERE expires<=?').run(now);this.db.prepare("DELETE FROM actions WHERE status='done' AND created<?").run(now-8*86400000);}
  blocked(key,max){const row=this.db.prepare('SELECT count,expires FROM limits WHERE key=?').get(key);return !!(row&&row.expires>Date.now()&&row.count>=max);}
  throttle(key,max,ms){const now=Date.now();const row=this.db.prepare('SELECT * FROM limits WHERE key=?').get(key);if(row&&row.expires>now){if(row.count>=max)return false;this.db.prepare('UPDATE limits SET count=count+1 WHERE key=?').run(key);}else this.db.prepare('INSERT INTO limits VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET count=excluded.count,expires=excluded.expires').run(key,1,now+ms);return true;}
+ refreshEligibility(){for(const row of this.db.prepare('SELECT s.run,r.state FROM scores s JOIN runs r ON r.id=s.run').all()){const eligible=fallbackStats(JSON.parse(row.state)).eligible?1:0;this.db.prepare('UPDATE scores SET eligible=? WHERE run=? AND eligible!=?').run(eligible,row.run,eligible);}}
  dailyPlayed(id){return !!this.db.prepare('SELECT 1 FROM scores WHERE user_id=? AND day=? AND daily=1 AND eligible=1').get(id,kstDay());}
  leaderboard(){return this.db.prepare("SELECT u.username,SUM(best) AS score FROM (SELECT user_id,day,MAX(rescued) AS best FROM scores WHERE daily=1 AND eligible=1 AND day>=? GROUP BY user_id,day) s JOIN users u ON u.id=s.user_id GROUP BY s.user_id ORDER BY score DESC LIMIT 10").all(kstDay(Date.now()-6*86400000));}
 }

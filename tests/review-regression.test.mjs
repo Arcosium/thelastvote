@@ -23,8 +23,11 @@ test('공동 표결에 존재하지 않는 발의자를 지정하지 않음',()=
 test('기록 열람 권한은 서버 직렬화에서 적용되고 종료 후 전체 공개',()=>{
  const g=make();g.day=2;e.evidence(g,'report','새 보고');assert.ok(e.publicGame(g).records.every(r=>r.day===2));e.openArchive(g);assert.ok(e.publicGame(g).records.some(r=>r.day===1));assert.throws(()=>e.openArchive(g));const other=make();other.mask='mechanic';other.day=2;other.archiveUsed=true;assert.equal(e.publicGame(other).records.length,0);assert.throws(()=>e.openArchive(other));e.endGame(other,'abandoned');assert.ok(e.publicGame(other).records.some(r=>r.day===1));
 });
-test('에코는 동료 응답이 끝난 뒤 현재 의견과 선택 구역을 읽음',async()=>{
- const g=make(),record=speech(g),service=ai(),seen=[];service.withProject=async(o,g,fn)=>fn({});service.request=async(p,g,id,text,ctx)=>{if(id==='echo'){assert.equal(seen.length,g.council.length-1);assert.equal(ctx.currentRound.length,g.council.length-1);assert.ok(ctx.currentRound.every(m=>m.plan==='rush'&&m.text==='발전소 검증에 동의합니다.'));}else {await new Promise(r=>setTimeout(r,10));seen.push(id);}return JSON.stringify({text:'발전소 검증에 동의합니다.',plan:'rush',evaluations:[]});};await service.discuss('owner',g,record);assert.equal(g.usage.fallbacks,0);assert.equal(g.preferences.echo,'rush');assert.equal(g.messages.at(-1).author,'echo');assert.equal(g.lastFeedback.suspicionAfter,24);
+test('세 위원은 서로 기다리지 않고 병렬 응답하며 에코는 이전 의견을 읽음',async()=>{
+ const g=make(),record=speech(g),service=ai(),started=[];service.withProject=async(o,g,fn)=>fn({});
+ let release;const barrier=new Promise(resolve=>release=resolve);
+ service.request=async(p,g,id,text,ctx)=>{started.push(id);if(id==='echo'){assert.ok(Array.isArray(ctx.priorRound));assert.equal(ctx.currentRound,undefined);}if(started.length===g.council.length)release();await Promise.race([barrier,new Promise((_,reject)=>setTimeout(()=>reject(new Error('serial council')),200))]);return JSON.stringify({text:'발전소 검증에 동의합니다.',plan:'rush',evaluations:[]});};
+ await service.discuss('owner',g,record);assert.equal(started.length,3);assert.equal(g.usage.fallbacks,0);assert.equal(g.preferences.echo,'rush');assert.equal(g.lastFeedback.suspicionAfter,24);
 });
 test('누락된 도구 실행은 중복 대체 집계 없이 한 번만 서버 집행',async()=>{
  const g=make(),service=ai();service.withProject=async()=>{throw new Error('provider_down');};speech(g);e.prepareOperation(g);await service.operation('owner',g,'rush');assert.equal(g.usage.fallbacks,1);assert.equal(g.toolReceipts.length,1);await service.verdict('owner',g,false);assert.equal(g.usage.fallbacks,2);assert.equal(g.toolReceipts.length,2);
