@@ -186,7 +186,7 @@ action은 begin, event, talk, prepare, search, verdict, reward, module, reroll, 
 
 ## UI와 자산
 
-관제실 배경은 로컬 Qwen-Image 2.1의 16:9 생성 결과다. seed는 214077이다. 생성 프롬프트와 재생성 코드가 `scripts/generate-art.py`에 있다. 기존 Image Studio의 ComfyUI 파이프라인을 호출했으며 외부 이미지 생성 API를 사용하지 않았다.
+관제실 배경은 로컬 Qwen-Image 2.1(2026-11-12 서버에서 삭제)로 만든 16:9 그림이다. seed는 214077이다. 생성 프롬프트와 재생성 코드가 `scripts/generate-art.py`에 있다. 지금 이 코드를 다시 돌리면 FLUX.3 Image Klein이 그리므로 같은 seed여도 다른 그림이 나온다. 기존 Image Studio의 ComfyUI 파이프라인을 호출했으며 외부 이미지 생성 API를 사용하지 않았다.
 
 Pretendard Variable을 자체 제공하고 폰트 라이선스를 같은 자산 폴더에 보관한다. 아이콘은 Phosphor 한 계열이다. 게임 정보는 괘선과 여백으로 나누고 강조색은 호박색을 사용한다. 모바일에서 날짜·현재 할 일·생존자·위원 의심 요약을 고정한다. 키보드 포커스, 폼 레이블, 실제 dialog, 상태 알림과 reduced-motion을 지원한다.
 
