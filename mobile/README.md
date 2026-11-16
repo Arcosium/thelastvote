@@ -2,7 +2,10 @@
 
 기존 `imnotahuman/mobile`의 WebView 래퍼를 재사용합니다.
 접속 주소는 `https://thelastvote.ai-ve.uk`, 패키지는 `uk.aive.thelastvote`입니다.
-앱 이름은 The Last Vote이고 versionCode 1, versionName 1.0.0입니다.
+앱 이름은 The Last Vote이고 versionCode 2, versionName 1.0.1입니다.
+1.0.1은 화면을 세로로 고정하고, 뒤로가기로 열린 창부터 닫고, 홈으로 나가면 배경음을 멈추고,
+결과 카드·기록 파일을 다운로드 폴더에 저장합니다(웹 화면의 `window.TheLastVoteApp.saveFile`,
+`window.TheLastVoteBack`과 짝을 이룹니다). Android 8~9는 저장 위치를 고르는 창이 뜹니다.
 Android 8 이상과 인터넷 연결이 필요합니다. 아이콘은 `public/favicon.svg`의 경로를
 Android vector drawable로 옮겼습니다.
 
