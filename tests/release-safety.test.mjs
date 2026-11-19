@@ -32,8 +32,8 @@ test('AI 비용 예약은 계정·판·하루의 미정산 금액을 포함하�
 test('한 턴 안에서도 비용 보고 후 다음 모델 요청을 차단하고 중복 사용량은 한 번 반영',async()=>{
  const originalOpen=Croche.open,key=process.env.CROCHE_SERVER_KEY,offline=process.env.AI_OFFLINE;
  process.env.CROCHE_SERVER_KEY=randomUUID();delete process.env.AI_OFFLINE;
- let observed,requests=0;const invoice={operationId:randomUUID(),costUsd:.02,costStatus:'reported',tokens:{total:1}};
- Croche.open=async options=>{observed=options.onUsage;return {agent:async()=>({subscribe:()=>({close(){}}),request:async()=>{requests++;observed({...invoice,operationId:String(requests)});observed({...invoice,operationId:String(requests)});return {messages:[{status:'completed',text:'{}'}]};}}),close:async()=>{}};};
+ let observed,requests=0;const invoice={type:'turn',cost:.02,costStatus:'reported',usage:{total:1}};
+ Croche.open=async()=>({agent:async()=>({subscribe:({onEvent})=>{observed=onEvent;return {close(){}};},request:async input=>{requests++;observed({type:'state',status:'running'});observed({...invoice,id:String(requests),causedBy:[input.id]});observed({...invoice,id:String(requests),causedBy:[input.id]});observed({type:'state',status:'idle'});return {id:input.id,status:'answered',messages:[{status:'completed',text:'{}',inReplyTo:[input.id]}]};}}),close:async()=>{}});
  try{
   const ai=new GameAI({dataDir:'/unused',recordUsage:()=>{},available:()=>true});const g=engine.newGame({seed:'budget'});
   await ai.withProject('a',g,async p=>{await ai.request(p,g,'hound','',{});await ai.request(p,g,'hound','',{});await assert.rejects(ai.request(p,g,'hound','',{}),/budget_or_offline/);});

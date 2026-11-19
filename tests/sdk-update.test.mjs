@@ -51,12 +51,13 @@ test('legacy usage survives migration; concurrent HTTP requests correlate to dis
  const legacy=old.prepare('SELECT * FROM usage').all();old.close();
  const s=new Store(dir),originalOpen=Croche.open,key=process.env.CROCHE_SERVER_KEY,offline=process.env.AI_OFFLINE;
  process.env.CROCHE_SERVER_KEY=randomUUID();delete process.env.AI_OFFLINE;
- Croche.open=async options=>({agent:async(id,{instance})=>({subscribe:()=>({close(){}}),request:async input=>{
+ const opened=[];
+ Croche.open=async options=>{opened.push(options);return {agent:async(id,{instance,tools})=>{let emit;opened.push({id,instance,tools});return {subscribe:({onEvent})=>{emit=onEvent;return {close(){}};},request:async input=>{
   await new Promise(resolve=>setTimeout(resolve,2));
-  const event={operationId:randomUUID(),purpose:'model',causedBy:[input.id],model:'test-model',modelSource:'response',requestedModel:'test-model',instance,costUsd:.001,costStatus:'reported',tokens:{total:10}};
-  options.onUsage(event);options.onUsage(event);
-  return {status:'completed',messages:[{status:'completed',text:'{}'}]};
- }}),close:async()=>{}});
+  const event={type:'turn',id:randomUUID(),inputs:[input.id],causedBy:[input.id],model:'test-model',cost:.001,costStatus:'reported',usage:{prompt:7,completion:3,total:10},at:new Date().toISOString()};
+  emit({type:'state',status:'running'});emit(event);emit(event);emit({type:'state',status:'idle'});
+  return {id:input.id,status:'answered',messages:[{status:'completed',text:'{}',inReplyTo:[input.id]}]};
+ }};},close:async()=>{}};};
  try{
   assert.deepEqual(s.db.prepare("SELECT * FROM usage WHERE id='legacy'").all(),legacy);
   const ai=new GameAI({dataDir:dir,store:s,available:()=>true,recordUsage:(...args)=>s.recordUsage(...args)});
@@ -67,8 +68,9 @@ test('legacy usage survives migration; concurrent HTTP requests correlate to dis
   }));
   const inputs=s.db.prepare('SELECT * FROM ai_inputs ORDER BY owner').all(),details=s.db.prepare('SELECT * FROM usage_details').all();
   assert.equal(inputs.length,2);assert.equal(details.length,2);
-  inputs.forEach((input,i)=>{assert.equal(input.request_id,requests[i]);assert.equal(input.owner,'owner-'+i);assert.equal(input.status,'completed');assert.ok(details.some(d=>JSON.parse(d.caused_by).includes(input.id)&&d.purpose==='model'&&d.model==='test-model'));});
+  inputs.forEach((input,i)=>{assert.equal(input.request_id,requests[i]);assert.equal(input.owner,'owner-'+i);assert.equal(input.status,'answered');assert.ok(details.some(d=>JSON.parse(d.caused_by).includes(input.id)&&d.purpose==='model'&&d.model==='test-model'));});
   assert.equal(s.db.prepare('SELECT COUNT(*) n FROM usage').get().n,3);
+  assert.equal(opened.find(o=>o.bundledConfig)?.bundledConfig.schema,7);assert.ok(opened.filter(o=>o.id==='hound').every(o=>JSON.stringify(o.tools)==='["records"]'&&o.instance.id.endsWith('-0')));
   assert.deepEqual(s.db.prepare("SELECT * FROM usage WHERE id='legacy'").all(),legacy);
   s.beginAIInput({id:'interrupted-input',owner:'owner',run:'run',requestId:'http-id',agent:'eve',instance:'run',day:1,phase:'discussion'});
   s.recoverActions();assert.equal(s.db.prepare("SELECT status FROM ai_inputs WHERE id='interrupted-input'").get().status,'interrupted');
@@ -76,4 +78,50 @@ test('legacy usage survives migration; concurrent HTTP requests correlate to dis
   Croche.open=originalOpen;if(key===undefined)delete process.env.CROCHE_SERVER_KEY;else process.env.CROCHE_SERVER_KEY=key;if(offline===undefined)delete process.env.AI_OFFLINE;else process.env.AI_OFFLINE=offline;
   s.db.close();rmSync(dir,{recursive:true,force:true});
  }
+});
+
+test('an input that ran but whose turn event never arrived is charged at the per-call estimate, never zero',async()=>{
+ const originalOpen=Croche.open,key=process.env.CROCHE_SERVER_KEY,offline=process.env.AI_OFFLINE,rows=[];
+ process.env.CROCHE_SERVER_KEY=randomUUID();delete process.env.AI_OFFLINE;
+ Croche.open=async()=>({agent:async()=>({subscribe:()=>({close(){}}),request:async input=>({id:input.id,status:'answered',messages:[{status:'completed',text:'{}',inReplyTo:[input.id]}]})}),close:async()=>{}});
+ try{
+  const ai=new GameAI({dataDir:'/unused',recordUsage:(owner,run,e)=>{rows.push(e);},available:()=>true}),g=engine.newGame({seed:'unobserved'});
+  await ai.withProject('owner',g,p=>ai.request(p,g,'hound','test',{}));
+  assert.equal(rows.length,1);assert.equal(rows[0].costStatus,'estimated');assert.equal(rows[0].costUsd,.01);
+  assert.equal(g.usage.costUsd,.01);assert.equal(g.usage.missing,1);
+ }finally{
+  Croche.open=originalOpen;if(key===undefined)delete process.env.CROCHE_SERVER_KEY;else process.env.CROCHE_SERVER_KEY=key;if(offline===undefined)delete process.env.AI_OFFLINE;else process.env.AI_OFFLINE=offline;
+ }
+});
+
+// Cross-review cases (Codex, 2026-11-19): a late second model call, holds of unobserved inputs, a returned refusal.
+async function withMock(agentFor,fn,reserve){
+ const originalOpen=Croche.open,saved={key:process.env.CROCHE_SERVER_KEY,offline:process.env.AI_OFFLINE,reserve:process.env.AI_TURN_RESERVE_USD},rows=[];
+ process.env.CROCHE_SERVER_KEY=randomUUID();delete process.env.AI_OFFLINE;if(reserve)process.env.AI_TURN_RESERVE_USD=reserve;
+ Croche.open=async()=>({agent:async()=>agentFor(),close:async()=>{}});
+ try{const ai=new GameAI({dataDir:'/unused',recordUsage:(owner,run,e)=>{rows.push(e);},available:()=>true}),g=engine.newGame({seed:'review-'+randomUUID()});await fn(ai,g);return {rows,g};}
+ finally{Croche.open=originalOpen;for(const [k,v] of [['CROCHE_SERVER_KEY',saved.key],['AI_OFFLINE',saved.offline],['AI_TURN_RESERVE_USD',saved.reserve]])if(v===undefined)delete process.env[k];else process.env[k]=v;}
+}
+const answered=input=>({id:input.id,status:'answered',messages:[{status:'completed',text:'{}',inReplyTo:[input.id]}]});
+const turn=(input,cost)=>({type:'turn',id:randomUUID(),inputs:[input.id],causedBy:[input.id],model:'m',cost,costStatus:'reported',usage:{total:1}});
+
+test('a model call whose turn arrives after the reply (before idle) is still counted',async()=>{
+ const {rows,g}=await withMock(()=>{let emit;return {subscribe:({onEvent})=>{emit=onEvent;return {close(){}};},request:async input=>{
+  emit({type:'state',status:'running'});emit(turn(input,.001));
+  setTimeout(()=>{emit(turn(input,.008));emit({type:'state',status:'idle'});},25);return answered(input);}};},
+  (ai,g)=>ai.withProject('owner',g,p=>ai.request(p,g,'hound','test',{})));
+ assert.equal(rows.length,2);assert.equal(Number(g.usage.costUsd.toFixed(6)),.009);assert.equal(g.usage.missing,0);
+});
+
+test('unobserved inputs keep their per-call hold, so the scope reserve still stops the next request',async()=>{
+ let requests=0;
+ const {rows,g}=await withMock(()=>({subscribe:()=>({close(){}}),request:async input=>{requests++;return answered(input);}}),
+  async(ai,g)=>ai.withProject('owner',g,async p=>{await Promise.all([ai.request(p,g,'hound','t',{}),ai.request(p,g,'audit','t',{})]);await assert.rejects(ai.request(p,g,'echo','t',{}),/budget_or_offline/);}),'.02');
+ assert.equal(requests,2);assert.equal(rows.length,2);assert.equal(Number(g.usage.costUsd.toFixed(6)),.02);
+});
+
+test('a returned refusal before any model call is not charged an estimate',async()=>{
+ const {rows,g}=await withMock(()=>({subscribe:()=>({close(){}}),request:async input=>({id:input.id,status:'failed',messages:[],error:{code:'rate_limited',category:'paused',message:'x'}})}),
+  (ai,g)=>ai.withProject('owner',g,p=>assert.rejects(ai.request(p,g,'hound','t',{}),/rate_limited/)));
+ assert.equal(rows.length,0);assert.equal(g.usage.costUsd,0);
 });

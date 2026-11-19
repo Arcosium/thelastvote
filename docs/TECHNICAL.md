@@ -17,7 +17,7 @@ flowchart LR
   API --> Engine[규칙 엔진]
   Engine --> DB[(SQLite·vault)]
   API --> Bridge[Croche 어댑터]
-  Bridge --> SDK[Croche 0.5.2]
+  Bridge --> SDK[Croche 0.6.2]
   SDK --> Council[위원별 에이전트·EVE·기록 평가·집행]
   Council -->|검증된 도구 요청| Engine
   SDK --> Memory[사용자별 FileStorage·vault]
@@ -131,9 +131,11 @@ AI 평가에는 실제 관찰자·대상·기록 ID가 있어야 한다. 최신 
 
 ## Croche 연결
 
-SDK 버전은 `@h1r-ai/croche` 0.5.5다. 기본 모델은 `deepseek/deepseek-v4.1-flash`, reasoning은 off다. `CROCHE_MODEL`로 서버 설정을 바꿀 수 있다. 실제 사용 모델과 비용은 SDK의 usage 이벤트를 따른다. 모델 선택 근거는 [공식 모델 안내](https://docs.croche.ai/models/)와 [TypeScript 가이드](https://docs.croche.ai/sdks/typescript/)를 확인했다.
+SDK 버전은 `@h1r-ai/croche` 0.6.2이다. 기본 모델은 `deepseek/deepseek-v4.1-flash`, reasoning은 off다. `CROCHE_MODEL`로 서버 설정을 바꿀 수 있다. 실제 사용 모델과 비용은 에이전트 구독의 `turn` 이벤트를 따른다(비용 단위는 credit, 1 credit = 1 USD). 모델 선택 근거는 [공식 모델 안내](https://docs.croche.ai/models/)와 [TypeScript 가이드](https://docs.croche.ai/sdks/typescript/)를 확인했다.
 
-`Croche.open`에 공개 프로젝트 키, 서버 키, 인증된 진행 소유자, 한국어, FileStorage와 전체 설정을 전달한다. 각 위원·EVE·기록 평가·집행은 이름이 다른 에이전트다. 인스턴스 키는 판 UUID와 위원 세대로 구성한다. FileStorage는 진행 소유자별 경로에 저장해 계정 간 대화가 섞이지 않는다.
+`Croche.open`에 공개 프로젝트 키, 서버 키, 인증된 진행 소유자, 한국어, FileStorage, schema 7 설정 번들과 `defineTool`로 만든 도구 3개를 전달한다. 0.5의 공통 지시문과 기억 정책은 0.6 번들에 프로젝트 단위 칸이 없어 각 에이전트에 붙인다. 도구 범위는 위원·기록 평가가 `records`, EVE는 없음, 집행은 세 도구 전부다. 각 위원·EVE·기록 평가·집행은 이름이 다른 에이전트다. 인스턴스 키는 판 UUID와 위원 세대로 구성한다. FileStorage는 진행 소유자별 경로에 저장해 계정 간 대화가 섞이지 않는다.
+
+0.6은 0.5 저장 데이터를 읽지 않는다. 같은 경로를 쓰지만 0.6.1로 바꾼 뒤에는 진행 중이던 판의 위원 대화 기억이 새로 시작된다. 게임 상태와 기록은 SQLite에 있어 영향이 없다. 0.6.1에서는 한 Croche의 여러 에이전트가 동시에 일하면 FileStorage가 `storage_error`를 내고 런타임이 멈추는 경우가 있어 저장소 호출과 에이전트 열기를 한 줄로 세웠다. 다른 잠금이 해제되는 중에 쓰기가 그 잠금을 확인하다 거절되던 것이 원인이었다. 0.6.2가 해제 순서와 확인을 고쳐 이 우회를 걷어냈다(오프라인 재현 0.6.1 300회 중 9회 → 0.6.2 1,800회 중 0회, 직렬화 없는 동시 열기·요청 0.6.1 60건 중 1건 → 0.6.2 120건 중 0건). 비용 이벤트를 받지 못하는 경우(저장소 오류로 관찰이 끊긴 경우 등)에 대비해 입력 하나의 정산은 그 에이전트 구독에서 `running`에서 `idle`로 바뀐 것을 본 뒤에 끝낸다. 이벤트는 순서대로 오므로 그때까지의 `turn`이 그 입력의 모델 호출 전부다. 호출당 보류액도 그때 푼다. 범위가 끝날 때 최대 1초 기다린 뒤에도 끝나지 않은 입력 가운데 `turn`이 하나도 없으면 호출당 예약액을 미수신 비용으로 기록하고, 일부만 받았으면 예약을 미확정으로 남긴다. 돌려받은 실패가 `allowance`·`paused`·`setup` 범주이고 `turn`이 없으면 모델 실행 전 거절로 보고 추정 비용을 붙이지 않는다. 도구 호출 뒤의 최종 답은 `inReplyTo`에 입력 ID가 없으므로 요청 결과의 마지막 완료 메시지를 쓴다.
 
 기억 예산은 600토큰, 문맥은 6,000토큰, 출력은 700토큰이다. 선제 요약은 끄고 SDK가 필요할 때 문맥을 정리하게 한다. EVE의 지난 판 기억은 계정 프로필에 짧은 결과 문장으로 보관하고 다음 판의 EVE 문맥에 전달한다. 위원 기억과 판을 넘는 EVE 요약은 저장 주체를 구분한다.
 
